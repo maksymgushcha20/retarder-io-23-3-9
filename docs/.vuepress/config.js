@@ -15,7 +15,7 @@ module.exports = {
     }]
   ],
   port: 3030,
-  base: '/retarder-io-23-3/',
+  base: '/retarder-io-23-3-9/',
   theme: 'cool',
   // dest: 'dist',
   head: [
@@ -84,7 +84,7 @@ module.exports = {
 
     lastUpdated: 'Останнє оновлення', // string | boolean
       // Assumes GitHub. Can also be a full GitLab url.
-    repo: 'https://github.com/nonGratis/retarder-io-23-3.git',
+    repo: 'https://github.com/nonGratis/retarder-io-23-3-9.git',
     // Customising the header label
     // Defaults to "GitHub"/"GitLab"/"Bitbucket" depending on `themeConfig.repo`
     repoLabel: 'Github',

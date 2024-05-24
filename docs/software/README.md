@@ -214,215 +214,149 @@ COMMIT;
 
 ### Модуль запуску сервера
 
-```js
-const express = require('express');
-const dotenv = require('dotenv').config();
-const app = express();
-const userRoutes = require('./routes/ProfileManage');
-const { handle404Errors, handleDevErrors, handleProdErrors } = require('./middlewares/errorHandlers');
+```py
+from init import create_app
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app = create_app()
 
-app.use('/', userRoutes);
-
-app.use(handle404Errors);
-app.use(handleDevErrors);
-app.use(handleProdErrors);
-
-app.listen(process.env.SERVER_PORT, () => {
-    console.log(`App is running on port ${process.env.SERVER_PORT}`);
-});
+if __name__ == '__main__':
+    app.run(debug=True)
 ```
 
-### Модуль для з'єднання з базою даних
+### Модуль, що містить конфігураційні дані
 
-```js
-const mysql = require('mysql');
-const dotenv = require('dotenv').config();
+```py
+from dotenv import load_dotenv
+import os
 
-const db = mysql.createConnection({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
-    database: process.env.DB_NAME,
-});
+load_dotenv()  
 
-db.connect((err) => {
-    if (err) {
-        console.error('Error connecting to MySQL:', err);
-        return;
-    }
-    console.log('Connected to MySQL');
-});
-
-module.exports = db;
+class Config:
+    SQLALCHEMY_DATABASE_URI = os.getenv('SQLALCHEMY_DATABASE_URI')
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY')
 ```
 
-### Модуль маршрутів для забезпечення деякого менеджменту акаунтів
+### Модуль, який визначає моделі бази даних
 
-```js
-const express = require('express');
-const router = express.Router();
-const userController = require('../controllers/ProfileManage');
+```py
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 
-router.post('/users', userController.register); // Create a new user
-router.post('/sessions', userController.login); // Create a new session (log in)
-router.delete('/users/:id', userController.deleteRequest); // Delete a user
+db = SQLAlchemy()
 
-module.exports = router;
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password = db.Column(db.Text, nullable=False)  # Changed to TEXT to handle long hashed passwords
+
+    def set_password(self, password):
+        self.password = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password, password)
 ```
 
-### Модуль контролерів для забезпечення деякого менеджменту акаунтів
+### Модуль, що містить маршрути до сервісу
 
-```js
-const { v4: uuidv4 } = require('uuid');
-const db = require('../db');
+```py
+from flask import Blueprint, request, jsonify
+from models import db, User
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from werkzeug.security import generate_password_hash
 
-exports.register = (req, res) => {
-    const {login, email, password} = req.query;
-    const id = uuidv4(); // Generate a UUID
-    const role_id = 1; // Default role for new client
+bp = Blueprint('routes', __name__)
 
-    // Email validation
-    const emailRegex = /^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/;
-    if (!emailRegex.test(email)) {
-        return res.status(400)
-                .json({ error: 'SingUp.WrongEmail' });
-    }
+@bp.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    if not data or not 'username' in data or not 'email' in data or not 'password' in data:
+        return jsonify({'message': 'Invalid data'}), 400
+    
+    new_user = User(username=data['username'], email=data['email'])
+    new_user.set_password(data['password'])
+    db.session.add(new_user)
+    db.session.commit()
+    return jsonify({'message': 'User registered successfully'}), 201
 
-    // Password validation
-    if (password.length < 8) {
-        return res.status(400)
-                .json({ error: 'SingUp.SimplePass' });
-    }
+@bp.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user = User.query.filter_by(username=data['username']).first()
+    if not user or not user.check_password(data['password']):
+        return jsonify({'message': 'Invalid credentials'}), 401
+    access_token = create_access_token(identity={'username': user.username, 'email': user.email})
+    return jsonify({'access_token': access_token}), 200
 
-    var sql = "INSERT INTO client (id, login, email, password, role_id) VALUES(?, ?, ?, ?, ?)";
+@bp.route('/users', methods=['GET'])
+@jwt_required()
+def get_users():
+    users = User.query.all()
+    result = [{'id': user.id, 'username': user.username, 'email': user.email} for user in users]
+    return jsonify(result), 200
 
-    db.query(sql, [id, login, email, password, role_id], (err) =>  {
-        if (err) {
-            console.error('Error in SQL query:', err);
-            if (err.code === 'ER_DUP_ENTRY') {
-                return res.status(400)
-                        .json({ error: 'BusyLogin' });
-            } else {
-                return res.status(500)
-                        .json({ error: 'Internal Server Error' });
-            }
-        } else {
-            res.status(201)
-            .json({ message: 'Registered Successfully' });
-        }
-    });
-};
+@bp.route('/user', methods=['GET'])
+@jwt_required()
+def get_user():
+    current_user = get_jwt_identity()
+    user = User.query.filter_by(username=current_user['username']).first()
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+    return jsonify({'id': user.id, 'username': user.username, 'email': user.email}), 200
 
-exports.login = (req, res) => {
-    const {login, email, password} = req.query;
+@bp.route('/user', methods=['PUT'])
+@jwt_required()
+def update_user():
+    current_user = get_jwt_identity()
+    user = User.query.filter_by(username=current_user['username']).first()
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
 
-    // Email validation
-    const emailRegex = /^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/;
-    if (!emailRegex.test(email)) {
-        return res.status(400)
-                .json({ error: 'Login.WrongEmail' });
-    }
+    data = request.get_json()
+    if 'username' in data:
+        user.username = data['username']
+    if 'email' in data:
+        user.email = data['email']
+    if 'password' in data:
+        user.password = generate_password_hash(data['password'], method='sha256')
 
-    var sql = "SELECT * FROM client WHERE login = ? AND email = ?";
-    db.query(sql, [login, email], (err, results) => {
-        if (err) {
-            console.error('Error in SQL query:', err);
-            return res.status(500)
-                    .json({ error: 'Internal Server Error' });
-        } else {
-            if (results.length === 0) {
-                return res.status(400)
-                        .json({ error: 'Login.AccDoesntExist' });
-            } else {
-                const user = results[0];
-                if (user.password !== password) {
-                    return res.status(400)
-                            .json({ error: 'Login.WrongPass' });
-                } else {
-                    res.status(200)
-                    .json({ message: 'Logged in Successfully' });
-                }
-            }
-        }
-    });
-};
+    db.session.commit()
+    return jsonify({'message': 'User updated successfully'}), 200
 
-exports.deleteRequest = (req, res) => {
-    const {login, password} = req.query;
+@bp.route('/user', methods=['DELETE'])
+@jwt_required()
+def delete_user():
+    current_user = get_jwt_identity()
+    user = User.query.filter_by(username=current_user['username']).first()
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
 
-    var sql = "SELECT * FROM client WHERE login = ?";
-    db.query(sql, [login], (err, results) => {
-        if (err) {
-            console.error('Error in SQL query:', err);
-            return res.status(500)
-                    .json({ error: 'Internal Server Error' });
-        } else {
-            if (results.length === 0) {
-                return res.status(400)
-                        .json({ error: 'DeleteRequest.AccDoesntExist' });
-            } else {
-                const user = results[0];
-                if (user.password !== password) {
-                    return res.status(400)
-                            .json({ error: 'DeleteRequest.WrongPass' });
-                } else {
-                    var sql = `DELETE FROM client WHERE login = '${login}'`;
-                    db.query(sql, (err) => {
-                        if (err) {
-                            console.error('Error in SQL query:', err);
-                            return res.status(500)
-                                    .json({ error: 'Internal Server Error' });
-                        } else {
-                            res.status(200)
-                            .json({ message: 'Account Deleted Successfully' });
-                        }
-                    });
-                }
-            }
-        }
-    });
-};
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({'message': 'User deleted successfully'}), 200
 ```
 
-## Модуль обробок помилок
+## Ініціалізація Flask додатку
 
-```js
-// 404 Error Handler
-function handle404Errors(req, res, next) {
-    const err = new Error('Not Found');
-    err.status = 404;
-    next(err);
-}
+```py
+from flask import Flask
+from flask_jwt_extended import JWTManager
+from config import Config
+from models import db
+from routes import bp
 
-// Development Error Handler
-// Will print stacktrace
-function handleDevErrors(err, req, res, next) {
-    if (req.app.get('env') !== 'development') return next(err);
+def create_app():
+    app = Flask(__name__)
+    app.config.from_object(Config)
 
-    res.status(err.status || 500);
-    res.json({
-        message: err.message,
-        error: err
-    });
-}
+    db.init_app(app)
+    jwt = JWTManager(app)
 
-// Production Error Handler
-// No stacktraces leaked to user
-function handleProdErrors(err, req, res, next) {
-    res.status(err.status || 500);
-    res.json({
-        message: err.message,
-        error: {}
-    });
-}
+    app.register_blueprint(bp)
 
-module.exports = {
-    handle404Errors,
-    handleDevErrors,
-    handleProdErrors
-};
+    with app.app_context():
+        db.create_all()
+
+    return app
 ```
